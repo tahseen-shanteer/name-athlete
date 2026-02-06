@@ -1,5 +1,6 @@
 import string
 import random
+import asyncio
 from datetime import datetime, timedelta
 from models import Session, Athlete, DisconnectedUser, RejectedSubmission
 from typing import Optional, Dict, List
@@ -10,6 +11,21 @@ logger = logging.getLogger(__name__)
 
 # In-memory session storage
 sessions: Dict[str, Session] = {}
+
+# Per-session locks to prevent race conditions on shared state
+_session_locks: Dict[str, asyncio.Lock] = {}
+
+
+def get_session_lock(code: str) -> asyncio.Lock:
+    """Get or create an asyncio lock for a session."""
+    if code not in _session_locks:
+        _session_locks[code] = asyncio.Lock()
+    return _session_locks[code]
+
+
+def cleanup_session_lock(code: str):
+    """Remove the lock for a session (call when session is deleted)."""
+    _session_locks.pop(code, None)
 
 
 def generate_session_code(length: int = 6) -> str:
@@ -34,6 +50,8 @@ def create_session(host_username: Optional[str] = None) -> Session:
         host_username=host_username,
     )
     sessions[code] = session
+    # Create a lock for this session
+    _session_locks[code] = asyncio.Lock()
     logger.info(f"Created session: {code} (host: {host_username})")
     return session
 

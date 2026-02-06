@@ -16,11 +16,12 @@ import {
 import { Leaderboard } from './components/Leaderboard'
 
 const GameContent = () => {
-  const { status, sessionCode, setSessionCode, setUsername, setStatus, count } = useGame()
+  const { status, sessionCode, setSessionCode, setUsername, setStatus, resetGame } = useGame()
   useSocket()
 
   const handleSessionCreated = (code, hostUsername) => {
     // Set username and session code, then move to joining state
+    // useSocket will connect automatically when sessionCode + username are set
     setUsername(hostUsername)
     setSessionCode(code)
     setStatus('joining')
@@ -57,11 +58,23 @@ const GameContent = () => {
     )
   }
 
-  if (status === 'joining' && sessionCode) {
+  // Connecting state — socket is establishing connection
+  // useSocket's session_joined handler will transition to 'waiting' or 'active'
+  if (status === 'joining') {
     return (
-      <div className="joining-page">
-        <h1>Join Session: {sessionCode}</h1>
-        <JoinSession onJoin={handleJoin} initialCode={sessionCode} />
+      <div className="landing-page">
+        <Notification />
+        <div className="hero">
+          <h1>2000 Athletes Challenge</h1>
+          <p>Connecting to session {sessionCode}...</p>
+        </div>
+        <div className="connecting-spinner">
+          <div className="spinner"></div>
+          <p>Establishing connection...</p>
+          <button onClick={resetGame} className="btn btn-secondary" style={{ marginTop: '1rem' }}>
+            Cancel
+          </button>
+        </div>
       </div>
     )
   }

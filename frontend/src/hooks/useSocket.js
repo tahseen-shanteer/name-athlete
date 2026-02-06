@@ -1,16 +1,14 @@
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 import { io } from 'socket.io-client'
 import { useGame } from '../context/GameContext'
 import { BACKEND_URL } from '../config'
 
 export const useSocket = () => {
-  const socketRef = useRef(null)
   const {
     sessionCode,
     username,
     setStatus,
     setAthletes,
-    setCount,
     addAthlete,
     setTimeRemaining,
     setEndsAt,
@@ -28,12 +26,13 @@ export const useSocket = () => {
     setRecentSubmissions,
     setIsPaused,
     resetGame,
+    socketRef,
   } = useGame()
 
   useEffect(() => {
     if (!sessionCode || !username) return
 
-    // Create socket connection
+    // Create socket connection (singleton — only called from App.jsx GameContent)
     const socket = io(BACKEND_URL || 'http://localhost:8000', {
       transports: ['websocket', 'polling'],
       reconnection: true,
@@ -62,7 +61,6 @@ export const useSocket = () => {
       setStatus(data.status)
       const athleteList = data.athletes || []
       setAthletes(athleteList)
-      setCount(data.count || 0)
       // Rebuild recent submissions from server data so they persist across reconnects
       // Athletes are ordered chronologically; take the last 10 reversed (most recent first)
       setRecentSubmissions(athleteList.slice(-10).reverse())
@@ -76,7 +74,7 @@ export const useSocket = () => {
         updateLeaderboard(data.leaderboard)
       }
 
-      // Set pause state from server
+      // Set pause state from server — handle time_remaining BEFORE ends_at
       if (data.is_paused) {
         setIsPaused(true)
         if (data.time_remaining_at_pause != null) {
@@ -84,12 +82,12 @@ export const useSocket = () => {
         }
       } else {
         setIsPaused(false)
-      }
-
-      if (data.ends_at) {
-        setEndsAt(data.ends_at)
-        const remaining = Math.floor((new Date(data.ends_at) - new Date()) / 1000)
-        setTimeRemaining(Math.max(0, remaining))
+        // Only compute time from ends_at when NOT paused (Step 3 fix)
+        if (data.ends_at) {
+          setEndsAt(data.ends_at)
+          const remaining = Math.floor((new Date(data.ends_at) - new Date()) / 1000)
+          setTimeRemaining(Math.max(0, remaining))
+        }
       }
 
       if (data.reconnected) {
@@ -226,74 +224,10 @@ export const useSocket = () => {
 
     return () => {
       socket.disconnect()
+      socketRef.current = null
     }
-    // Note: showNotification, setAthletes, etc. are stable functions from context
-    // Only sessionCode and username changes should trigger reconnection
+    // Only sessionCode and username changes should trigger reconnection.
+    // All other deps are stable (useCallback or setState functions).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionCode, username])
-
-  const startGame = () => {
-    if (socketRef.current && sessionCode) {
-      // Include username so server can verify host
-      socketRef.current.emit('start_game', { code: sessionCode, username })
-    }
-  }
-
-  const submitAthlete = (athleteName, sport, hint = null, sportLabel = null) => {
-    if (socketRef.current && sessionCode && username) {
-      setIsSubmitting(true)
-      setError(null)
-      
-      // Store for potential resubmission with hint (include label for display)
-      setPendingSubmission({ name: athleteName, sport, sportLabel: sportLabel || sport })
-      
-      const payload = {
-        session_code: sessionCode,
-        athlete_name: athleteName,
-        sport,
-        username,
-      }
-      
-      // Include hint if provided
-      if (hint) {
-        payload.hint = hint
-      }
-      
-      socketRef.current.emit('submit_athlete', payload)
-    }
-  }
-
-  const pauseGame = () => {
-    if (socketRef.current && sessionCode) {
-      socketRef.current.emit('pause_game', { code: sessionCode, username })
-    }
-  }
-
-  const resumeGame = () => {
-    if (socketRef.current && sessionCode) {
-      socketRef.current.emit('resume_game', { code: sessionCode, username })
-    }
-  }
-
-  const endGameEarly = () => {
-    if (socketRef.current && sessionCode) {
-      socketRef.current.emit('end_game_early', { code: sessionCode, username })
-    }
-  }
-
-  const removePlayer = (targetUsername) => {
-    if (socketRef.current && sessionCode) {
-      socketRef.current.emit('remove_player', { code: sessionCode, username, target_username: targetUsername })
-    }
-  }
-
-  return {
-    startGame,
-    submitAthlete,
-    pauseGame,
-    resumeGame,
-    endGameEarly,
-    removePlayer,
-    isConnected: socketRef.current?.connected,
-  }
 }

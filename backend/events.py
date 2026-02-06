@@ -13,6 +13,17 @@ logger = logging.getLogger(__name__)
 timer_tasks = {}
 
 
+def verify_sender(code: str, sid: str, username: str) -> bool:
+    """
+    Verify that the socket ID (sid) is actually connected as the claimed username.
+    Prevents spoofing where any socket claims to be any user.
+    """
+    session = sm.get_session(code)
+    if not session:
+        return False
+    return session.connected_users.get(sid) == username
+
+
 async def handle_join_session(sio: socketio.AsyncServer, sid: str, data: dict):
     """Handle user joining a session."""
     code = data.get("code")
@@ -25,6 +36,11 @@ async def handle_join_session(sio: socketio.AsyncServer, sid: str, data: dict):
     session = sm.get_session(code)
     if not session:
         await sio.emit("error", {"message": "Session not found"}, room=sid)
+        return
+
+    # Prevent joining completed sessions
+    if session.status == "completed":
+        await sio.emit("error", {"message": "This session has ended"}, room=sid)
         return
 
     # Check if user is reconnecting (takes priority over username check)
@@ -111,6 +127,11 @@ async def handle_start_game(sio: socketio.AsyncServer, sid: str, data: dict):
         await sio.emit("error", {"message": "Missing session code"}, room=sid)
         return
 
+    # Verify the sender is who they claim to be
+    if not verify_sender(code, sid, username):
+        await sio.emit("error", {"message": "Authentication failed"}, room=sid)
+        return
+
     session = sm.get_session(code)
     if not session:
         await sio.emit("error", {"message": "Session not found"}, room=sid)
@@ -160,6 +181,15 @@ async def handle_submit_athlete(sio: socketio.AsyncServer, sid: str, data: dict)
         await sio.emit(
             "submission_error",
             {"error": "missing_fields", "message": "Missing required fields"},
+            room=sid,
+        )
+        return
+
+    # Verify the sender is who they claim to be
+    if not verify_sender(code, sid, username):
+        await sio.emit(
+            "submission_error",
+            {"error": "auth_failed", "message": "Authentication failed"},
             room=sid,
         )
         return
@@ -287,55 +317,82 @@ async def handle_submit_athlete(sio: socketio.AsyncServer, sid: str, data: dict)
                 )
                 return
 
-        # Now check for duplicate using entity ID (catches "Messi" == "Lionel Messi")
-        if entity_id and sm.is_duplicate(code, normalized, entity_id):
-            # Record rejected submission
-            sm.add_rejected_submission(code, athlete_name, sport, username, "duplicate")
-            # Use canonical name in message if available
-            display_name = canonical_name or athlete_name
-            await sio.emit(
-                "submission_error",
-                {
-                    "error": "duplicate",
-                    "message": f"{display_name} has already been submitted",
-                },
-                room=sid,
+        # Acquire session lock for atomic duplicate-check + add
+        lock = sm.get_session_lock(code)
+        async with lock:
+            # Now check for duplicate using entity ID (catches "Messi" == "Lionel Messi")
+            if entity_id and sm.is_duplicate(code, normalized, entity_id):
+                # Record rejected submission
+                sm.add_rejected_submission(
+                    code, athlete_name, sport, username, "duplicate"
+                )
+                # Use canonical name in message if available
+                display_name = canonical_name or athlete_name
+                await sio.emit(
+                    "submission_error",
+                    {
+                        "error": "duplicate",
+                        "message": f"{display_name} has already been submitted",
+                    },
+                    room=sid,
+                )
+                return
+
+            # Also check normalized name for fallback duplicate detection
+            if not entity_id and sm.is_duplicate(code, normalized):
+                # Record rejected submission
+                sm.add_rejected_submission(
+                    code, athlete_name, sport, username, "duplicate"
+                )
+                await sio.emit(
+                    "submission_error",
+                    {
+                        "error": "duplicate",
+                        "message": f"{athlete_name} has already been submitted",
+                    },
+                    room=sid,
+                )
+                return
+
+            if not is_valid:
+                # Record rejected submission
+                sm.add_rejected_submission(
+                    code, athlete_name, sport, username, error or "unknown"
+                )
+
+                error_messages = {
+                    "invalid_athlete": f"{athlete_name} could not be verified as a real athlete",
+                    "wrong_sport": f"No athlete found with that name for {sport_display}",
+                    "validation_failed": "Validation service unavailable. Please try again.",
+                }
+
+                response_data = {
+                    "error": error,
+                    "message": error_messages.get(error, "Validation failed"),
+                }
+
+                await sio.emit("submission_error", response_data, room=sid)
+                return
+
+            # Create athlete entry (only reached if validation succeeded and no duplicate)
+            # Use canonical name if available, otherwise use user input
+            display_name = canonical_name if canonical_name else athlete_name
+
+            athlete = Athlete(
+                name=display_name,  # Store canonical name as primary name
+                normalized_name=normalized,
+                sport=sport,
+                sport_display=sport_display,  # Human-readable sport label
+                submitted_by=username,
+                submitted_at=datetime.utcnow(),
+                validated=True,  # Always true now since we reject on failure
+                entity_id=entity_id,  # For entity-based duplicate detection
+                hint=hint,  # Store hint if provided
+                canonical_name=canonical_name,  # Also store separately for reference
             )
-            return
 
-        # Also check normalized name for fallback duplicate detection
-        if not entity_id and sm.is_duplicate(code, normalized):
-            # Record rejected submission
-            sm.add_rejected_submission(code, athlete_name, sport, username, "duplicate")
-            await sio.emit(
-                "submission_error",
-                {
-                    "error": "duplicate",
-                    "message": f"{athlete_name} has already been submitted",
-                },
-                room=sid,
-            )
-            return
-
-        if not is_valid:
-            # Record rejected submission
-            sm.add_rejected_submission(
-                code, athlete_name, sport, username, error or "unknown"
-            )
-
-            error_messages = {
-                "invalid_athlete": f"{athlete_name} could not be verified as a real athlete",
-                "wrong_sport": f"No athlete found with that name for {sport_display}",
-                "validation_failed": "Validation service unavailable. Please try again.",
-            }
-
-            response_data = {
-                "error": error,
-                "message": error_messages.get(error, "Validation failed"),
-            }
-
-            await sio.emit("submission_error", response_data, room=sid)
-            return
+            # Add to session (inside lock — atomic with duplicate check)
+            sm.add_athlete(code, athlete)
 
     except Exception as e:
         logger.error(f"Validation error: {e}")
@@ -353,26 +410,6 @@ async def handle_submit_athlete(sio: socketio.AsyncServer, sid: str, data: dict)
             room=sid,
         )
         return
-
-    # Create athlete entry (only reached if validation succeeded)
-    # Use canonical name if available, otherwise use user input
-    display_name = canonical_name if canonical_name else athlete_name
-
-    athlete = Athlete(
-        name=display_name,  # Store canonical name as primary name
-        normalized_name=normalized,
-        sport=sport,
-        sport_display=sport_display,  # Human-readable sport label
-        submitted_by=username,
-        submitted_at=datetime.utcnow(),
-        validated=True,  # Always true now since we reject on failure
-        entity_id=entity_id,  # For entity-based duplicate detection
-        hint=hint,  # Store hint if provided
-        canonical_name=canonical_name,  # Also store separately for reference
-    )
-
-    # Add to session
-    sm.add_athlete(code, athlete)
 
     # Get updated leaderboard
     leaderboard = sm.get_leaderboard(code)
@@ -417,6 +454,11 @@ async def handle_pause_game(sio: socketio.AsyncServer, sid: str, data: dict):
         await sio.emit("error", {"message": "Missing code or username"}, room=sid)
         return
 
+    # Verify the sender is who they claim to be
+    if not verify_sender(code, sid, username):
+        await sio.emit("error", {"message": "Authentication failed"}, room=sid)
+        return
+
     if not sm.is_host(code, username):
         await sio.emit(
             "error", {"message": "Only the host can pause the game"}, room=sid
@@ -456,6 +498,11 @@ async def handle_resume_game(sio: socketio.AsyncServer, sid: str, data: dict):
         await sio.emit("error", {"message": "Missing code or username"}, room=sid)
         return
 
+    # Verify the sender is who they claim to be
+    if not verify_sender(code, sid, username):
+        await sio.emit("error", {"message": "Authentication failed"}, room=sid)
+        return
+
     if not sm.is_host(code, username):
         await sio.emit(
             "error", {"message": "Only the host can resume the game"}, room=sid
@@ -493,6 +540,11 @@ async def handle_end_game_early(sio: socketio.AsyncServer, sid: str, data: dict)
         await sio.emit("error", {"message": "Missing code or username"}, room=sid)
         return
 
+    # Verify the sender is who they claim to be
+    if not verify_sender(code, sid, username):
+        await sio.emit("error", {"message": "Authentication failed"}, room=sid)
+        return
+
     if not sm.is_host(code, username):
         await sio.emit("error", {"message": "Only the host can end the game"}, room=sid)
         return
@@ -516,6 +568,11 @@ async def handle_remove_player(sio: socketio.AsyncServer, sid: str, data: dict):
 
     if not code or not username or not target_username:
         await sio.emit("error", {"message": "Missing required fields"}, room=sid)
+        return
+
+    # Verify the sender is who they claim to be
+    if not verify_sender(code, sid, username):
+        await sio.emit("error", {"message": "Authentication failed"}, room=sid)
         return
 
     if not sm.is_host(code, username):
@@ -617,9 +674,13 @@ async def run_timer(sio: socketio.AsyncServer, code: str):
 
 
 async def end_game(sio: socketio.AsyncServer, code: str):
-    """End the game and notify all users."""
+    """End the game and notify all users. Idempotent — safe to call multiple times."""
     session = sm.get_session(code)
     if not session:
+        return
+
+    # Idempotency guard: if already completed, do nothing
+    if session.status == "completed":
         return
 
     sm.end_session(code)

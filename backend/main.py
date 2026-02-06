@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from models import CreateSessionResponse, CreateSessionRequest
 import session_manager as sm
 from sports_config import initialize_sports_cache, get_cached_sports
+from validation import close_http_session
 from events import register_events
 import logging
 
@@ -32,7 +33,8 @@ async def lifespan(app: FastAPI):
     await initialize_sports_cache()
     logger.info("Sports cache ready.")
     yield
-    # Shutdown logic (if needed) goes here
+    # Shutdown: clean up shared resources
+    await close_http_session()
     logger.info("Application shutting down.")
 
 

@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import Select from 'react-select'
 import { useGame } from '../context/GameContext'
-import { useSocket } from '../hooks/useSocket'
 import { BACKEND_URL } from '../config'
 
 export const Timer = () => {
@@ -40,8 +39,7 @@ export const Counter = () => {
 }
 
 export const SessionInfo = () => {
-  const { sessionCode, connectedUsers, yourSubmissions, status, isHost, hostUsername } = useGame()
-  const { startGame } = useSocket()
+  const { sessionCode, connectedUsers, yourSubmissions, status, isHost, hostUsername, startGame } = useGame()
 
   if (status === 'idle' || status === 'joining') return null
 
@@ -126,9 +124,9 @@ export const SubmitForm = () => {
     setError,
     requiresHint,
     pendingSubmission,
-    clearDisambiguation
+    clearDisambiguation,
+    submitAthlete
   } = useGame()
-  const { submitAthlete } = useSocket()
 
   useEffect(() => {
     // Fetch sports list and transform to react-select format
@@ -412,8 +410,7 @@ export const GameOverSummary = () => {
 }
 
 export const HostControls = () => {
-  const { isHost, status, connectedUsers, username, isPaused } = useGame()
-  const { pauseGame, resumeGame, endGameEarly, removePlayer } = useSocket()
+  const { isHost, status, connectedUsers, username, isPaused, pauseGame, resumeGame, endGameEarly, removePlayer } = useGame()
   const [showControls, setShowControls] = useState(false)
 
   if (!isHost || status !== 'active') return null

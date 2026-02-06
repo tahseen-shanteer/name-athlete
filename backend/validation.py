@@ -31,6 +31,43 @@ NAME_SIMILARITY_THRESHOLD = 45  # Out of 100 -- lenient to allow nicknames/last 
 # Structure: {(normalized_name, sport_qid): validation_result_tuple}
 validation_cache: dict = {}
 
+# Shared aiohttp session (created lazily, closed on app shutdown)
+_http_session: Optional[aiohttp.ClientSession] = None
+
+
+async def get_http_session() -> aiohttp.ClientSession:
+    """Get or create the shared aiohttp ClientSession.
+
+    Recreates the session if the event loop has changed (e.g., during testing)
+    or if the session was closed.
+    """
+    global _http_session
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    if _http_session is not None and not _http_session.closed:
+        # Check if session is bound to the current event loop
+        try:
+            if _http_session._loop is not loop:  # type: ignore[attr-defined]
+                await _http_session.close()
+                _http_session = None
+        except Exception:
+            _http_session = None
+    if _http_session is None or _http_session.closed:
+        _http_session = aiohttp.ClientSession(
+            headers={"User-Agent": USER_AGENT},
+            timeout=aiohttp.ClientTimeout(total=20),
+        )
+    return _http_session
+
+
+async def close_http_session():
+    """Close the shared aiohttp ClientSession. Call on app shutdown."""
+    global _http_session
+    if _http_session and not _http_session.closed:
+        await _http_session.close()
+        _http_session = None
+
 
 def sanitize_athlete_name(name: str) -> Tuple[bool, str, Optional[str]]:
     """
@@ -144,21 +181,18 @@ async def _fetch_wikidata_search(name: str, limit: int = 5) -> list:
         "format": "json",
         "limit": limit,
     }
-    headers = {"User-Agent": USER_AGENT}
+    session = await get_http_session()
+    async with session.get(
+        search_url,
+        params=params,
+        timeout=aiohttp.ClientTimeout(total=15),
+    ) as response:
+        if response.status != 200:
+            logger.error(f"Wikidata search failed with status {response.status}")
+            raise Exception(f"Wikidata search failed: {response.status}")
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            search_url,
-            params=params,
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as response:
-            if response.status != 200:
-                logger.error(f"Wikidata search failed with status {response.status}")
-                raise Exception(f"Wikidata search failed: {response.status}")
-
-            data = await response.json()
-            return data.get("search", [])
+        data = await response.json()
+        return data.get("search", [])
 
 
 async def search_wikidata_person(
@@ -403,22 +437,21 @@ async def verify_is_athlete(entity_id: str) -> Tuple[bool, list[str]]:
 async def execute_sparql_query(query: str, timeout: int = 15):
     """Execute SPARQL query against Wikidata endpoint."""
     endpoint = "https://query.wikidata.org/sparql"
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "application/sparql-results+json",
-    }
     params = {"query": query}
     timeout_obj = aiohttp.ClientTimeout(total=timeout)
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            endpoint, params=params, headers=headers, timeout=timeout_obj
-        ) as response:
-            if response.status == 200:
-                return await response.json()
-            else:
-                logger.error(f"Wikidata query failed with status {response.status}")
-                raise Exception(f"Wikidata query failed: {response.status}")
+    session = await get_http_session()
+    async with session.get(
+        endpoint,
+        params=params,
+        headers={"Accept": "application/sparql-results+json"},
+        timeout=timeout_obj,
+    ) as response:
+        if response.status == 200:
+            return await response.json()
+        else:
+            logger.error(f"Wikidata query failed with status {response.status}")
+            raise Exception(f"Wikidata query failed: {response.status}")
 
 
 # =============================================================================
@@ -447,31 +480,28 @@ async def get_entity_label(entity_id: str) -> Optional[str]:
         "languages": "en",
         "format": "json",
     }
-    headers = {"User-Agent": USER_AGENT}
-
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                url,
-                params=params,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as response:
-                if response.status != 200:
-                    logger.warning(
-                        f"Failed to fetch label for {entity_id}: {response.status}"
-                    )
-                    return None
-
-                data = await response.json()
-                entity_data = data.get("entities", {}).get(entity_id, {})
-                labels = entity_data.get("labels", {})
-                en_label = labels.get("en", {}).get("value")
-
-                if en_label:
-                    logger.info(f"Fetched canonical name for {entity_id}: {en_label}")
-                    return en_label
+        session = await get_http_session()
+        async with session.get(
+            url,
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as response:
+            if response.status != 200:
+                logger.warning(
+                    f"Failed to fetch label for {entity_id}: {response.status}"
+                )
                 return None
+
+            data = await response.json()
+            entity_data = data.get("entities", {}).get(entity_id, {})
+            labels = entity_data.get("labels", {})
+            en_label = labels.get("en", {}).get("value")
+
+            if en_label:
+                logger.info(f"Fetched canonical name for {entity_id}: {en_label}")
+                return en_label
+            return None
     except Exception as e:
         logger.warning(f"Error fetching label for {entity_id}: {e}")
         return None
