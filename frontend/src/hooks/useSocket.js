@@ -34,7 +34,7 @@ export const useSocket = () => {
 
     // Create socket connection (singleton — only called from App.jsx GameContent)
     const socket = io(BACKEND_URL || 'http://localhost:8000', {
-      transports: ['websocket', 'polling'],
+      transports: ['polling', 'websocket'],
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 1000,
