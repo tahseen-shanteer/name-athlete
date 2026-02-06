@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import Select from 'react-select'
 import { useGame } from '../context/GameContext'
 import { useSocket } from '../hooks/useSocket'
+import { BACKEND_URL } from '../config'
 
 export const Timer = () => {
   const { timeRemaining, status, isPaused } = useGame()
@@ -131,7 +132,7 @@ export const SubmitForm = () => {
 
   useEffect(() => {
     // Fetch sports list and transform to react-select format
-    fetch('/api/sports')
+    fetch(BACKEND_URL + '/api/sports')
       .then(res => res.json())
       .then(data => {
         const options = (data.sports || []).map(s => ({

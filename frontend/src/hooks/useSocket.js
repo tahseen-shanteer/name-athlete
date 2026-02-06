@@ -1,8 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { io } from 'socket.io-client'
 import { useGame } from '../context/GameContext'
-
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
+import { BACKEND_URL } from '../config'
 
 export const useSocket = () => {
   const socketRef = useRef(null)
@@ -35,7 +34,7 @@ export const useSocket = () => {
     if (!sessionCode || !username) return
 
     // Create socket connection
-    const socket = io(BACKEND_URL, {
+    const socket = io(BACKEND_URL || 'http://localhost:8000', {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: 10,

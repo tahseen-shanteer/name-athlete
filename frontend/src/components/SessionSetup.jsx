@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useGame } from '../context/GameContext'
+import { BACKEND_URL } from '../config'
 
 export const CreateSession = ({ onCreated }) => {
   const [loading, setLoading] = useState(false)
@@ -24,7 +25,7 @@ export const CreateSession = ({ onCreated }) => {
     setError(null)
 
     try {
-      const response = await fetch('/api/session/create', { 
+      const response = await fetch(BACKEND_URL + '/api/session/create', { 
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
