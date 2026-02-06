@@ -1,0 +1,15 @@
+version: 2
+build:
+  runtime: python
+  buildCommand: cd backend && pip install -r requirements.txt
+  startCommand: cd backend && python main.py
+  
+services:
+  - type: web
+    name: athletes-backend
+    env: python
+    buildCommand: cd backend && pip install -r requirements.txt
+    startCommand: cd backend && python main.py
+    envVars:
+      - key: PORT
+        value: 8000
